@@ -1,0 +1,123 @@
+name: Instant official source formatting comparison
+on:
+  push:
+    branches: [codex/validate-row-source-format]
+permissions:
+  contents: read
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CI: 'true'
+    steps:
+      - name: Exact original source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: instantdb/instant
+          ref: 15358ad712df6879b8953ee8289af0e891d4dde8
+          path: original
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Exact unchanged source-only candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: peterolkhov/instant
+          ref: be3dc34cddfffc0e0fa4011bdca5438df12e2b38
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.14.0'
+      - name: Install declared filtered dependencies without lifecycle scripts
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.2.0 --activate
+          pnpm --dir original/client --filter @instantdb/components... install --frozen-lockfile --ignore-scripts
+          pnpm --dir candidate/client --filter @instantdb/components... install --frozen-lockfile --ignore-scripts
+      - name: Exact official full formatting, tracked component source, changed files and counterfactual
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib,json,os,pathlib,subprocess
+          
+          root=pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          base='15358ad712df6879b8953ee8289af0e891d4dde8'
+          head='be3dc34cddfffc0e0fa4011bdca5438df12e2b38'
+          tree='a774fc6a87d5773ea7ffaf2adad1ac5d96b63741'
+          source='client/packages/components/src/components/explorer/edit-row-dialog.tsx'
+          paths=[
+           'client/packages/components/package.json',
+           'client/packages/components/src/components/explorer/__tests__/edit-row-dialog.test.ts',
+           source,
+          ]
+          results=[]
+          
+          def git(repo,*args):
+           return subprocess.check_output(['git','-C',str(repo),*args]).decode().strip()
+          
+          def guard(repo,phase,previous=None):
+           assert git(repo,'rev-parse','HEAD')==(base if repo.name=='original' else head)
+           assert not git(repo,'status','--porcelain'),git(repo,'status','--porcelain')
+           if repo.name=='candidate':
+            assert git(repo,'rev-parse','HEAD^{tree}')==tree
+            assert git(repo,'diff','--name-only',base,head).splitlines()==sorted(paths)
+           entries=[]
+           for name in subprocess.check_output(['git','-C',str(repo),'ls-files','-z']).decode().split('\0'):
+            if not name:continue
+            p=repo/name;data=p.readlink().as_posix().encode() if p.is_symlink() else p.read_bytes()
+            entries.append([name,hashlib.sha256(data).hexdigest()])
+           state={'count':len(entries),'sha256':hashlib.sha256(json.dumps(entries,separators=(',',':')).encode()).hexdigest()}
+           expected='05ca69b176df73486008a9832587b06fbc2709174aa9cd0cb009c78bd4738584' if repo.name=='original' else 'f953a0436d88530ac520a2e8ab10e35dd6df4a0ee9438f4bc148b563e56743f6'
+           assert state['sha256']==expected
+           if previous is not None:assert state==previous
+           print('FORMAT_GUARD_JSON='+json.dumps({'repo':repo.name,'phase':phase,'head':git(repo,'rev-parse','HEAD'),'tree':git(repo,'rev-parse','HEAD^{tree}'),'tracked':state}),flush=True)
+           return state
+          
+          def check(repo,label,args):
+           r=subprocess.run(['pnpm',*args],cwd=repo/'client',stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+           print(r.stdout.decode(),flush=True)
+           row={'repo':repo.name,'label':label,'command':['pnpm',*args],'exit':r.returncode,'output_sha256':hashlib.sha256(r.stdout).hexdigest()}
+           results.append(row);print('FORMAT_CHECK_JSON='+json.dumps(row),flush=True)
+          
+          formatted={}
+          for repo in [root/'original',root/'candidate']:
+           state=guard(repo,'before')
+           try:
+            # Exact committed official command, without injected fixtures or generated build products.
+            check(repo,'official-full-client-check-format',['run','check-format'])
+            tracked=git(repo,'ls-files','client/packages/components').splitlines()
+            tracked=[p.removeprefix('client/') for p in tracked if pathlib.Path(p).suffix in ('.ts','.tsx','.js','.jsx','.json','.md')]
+            options=['exec','prettier','--check','--ignore-path','.prettierignore','--ignore-path','../.gitignore']
+            check(repo,'all-tracked-components-format',options+tracked)
+            changed=[p.removeprefix('client/') for p in paths if (repo/p).exists()]
+            check(repo,'changed-source-files-format',options+changed)
+            for name in paths:
+             if not (repo/name).exists():continue
+             raw=(repo/name).read_bytes()
+             r=subprocess.run(['pnpm','exec','prettier','--stdin-filepath',name.removeprefix('client/')],cwd=repo/'client',input=raw,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+             assert r.returncode==0,r.stderr.decode()
+             assert r.stdout==raw,('Native formatter changes source bytes',repo.name,name)
+             formatted[(repo.name,name)]=r.stdout.decode()
+             print('FORMATTED_SOURCE_JSON='+json.dumps({'repo':repo.name,'path':name,'sha256':hashlib.sha256(raw).hexdigest(),'native_formatter_bytes_identical':True}),flush=True)
+           finally:
+            guard(repo,'after',state)
+          
+          old="    const cleaned = String(value).replace(/[^\\d.-]/g, '');"
+          new="""    const text = String(value);
+              const number = Number(text);
+              if (text.trim() !== '' && Number.isFinite(number)) {
+                return number;
+              }
+              const cleaned = text.replace(/[^\\d.-]/g, '');"""
+          original=formatted[('original',source)]
+          candidate=formatted[('candidate',source)]
+          assert original.count(old)==1
+          counterfactual=original.replace('function parseFieldValue(value: any, type: FieldType) {','export function parseFieldValue(value: any, type: FieldType) {').replace(old,new)
+          assert counterfactual==candidate,'Formatter delta extends beyond the exact declared source repair'
+          print('FORMAT_COUNTERFACTUAL_JSON='+json.dumps({'native_original_format_plus_exact_declared_edit_equals_native_candidate_format':True,'source_commit':head,'source_tree':tree,'source_changes':paths,'source_reformatted':False}),flush=True)
+          print('ALL_FORMAT_CHECKS_JSON='+json.dumps(results),flush=True)
+          assert all(r['exit']==0 for r in results),'Official or tracked/changed native formatting failed; preserve actual failure'
+          PYTHON
