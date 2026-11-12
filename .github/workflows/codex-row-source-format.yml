@@ -30,13 +30,23 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22.14.0'
+      - name: Check standard runner disk before broader declared dependencies
+        shell: bash
+        run: |
+          df -h "$GITHUB_WORKSPACE"
+          python3 - <<'PYTHON'
+          import json,os,shutil
+          disk=shutil.disk_usage(os.environ['GITHUB_WORKSPACE'])
+          print('RESOURCE_JSON='+json.dumps({'total_bytes':disk.total,'free_bytes':disk.free,'minimum_free_bytes':10*1024**3}))
+          assert disk.free >= 10*1024**3, 'Standard runner needs 10 GiB free before declared dependency install'
+          PYTHON
       - name: Install declared filtered dependencies without lifecycle scripts
         shell: bash
         run: |
           corepack enable
           corepack prepare pnpm@10.2.0 --activate
-          pnpm --dir original/client --filter @instantdb/components... install --frozen-lockfile --ignore-scripts
-          pnpm --dir candidate/client --filter @instantdb/components... install --frozen-lockfile --ignore-scripts
+          pnpm --dir original/client --filter @instantdb/components... --filter instant-www... install --frozen-lockfile --ignore-scripts
+          pnpm --dir candidate/client --filter @instantdb/components... --filter instant-www... install --frozen-lockfile --ignore-scripts
       - name: Exact official full formatting, tracked component source, changed files and counterfactual
         shell: bash
         run: |
