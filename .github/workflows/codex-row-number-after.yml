@@ -1,0 +1,62 @@
+name: Instant row number native implementation verification
+on:
+  push:
+    branches: [codex/validate-row-number-exponents]
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      CANDIDATE_SHA: be3dc34cddfffc0e0fa4011bdca5438df12e2b38
+      CANDIDATE_TREE: a774fc6a87d5773ea7ffaf2adad1ac5d96b63741
+      CI: 'true'
+    steps:
+      - name: Exact original source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: instantdb/instant
+          ref: 15358ad712df6879b8953ee8289af0e891d4dde8
+          path: original
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Exact source-only candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: peterolkhov/instant
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.14.0'
+          package-manager-cache: false
+      - name: Materialize frozen finite native packet
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import base64,hashlib,json,os,pathlib,zlib
+          data=base64.b64decode('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',validate=True)
+          assert hashlib.sha256(data).hexdigest()=='2b2b9d76952ca418d438d824db940a9e2dcc0ad7f59a8435f48662ccb961847b'
+          packet=json.loads(zlib.decompress(data))
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'instant-native-after';root.mkdir()
+          for name,text in packet.items():
+              assert '/' not in name and name not in ('.','..')
+              (root/name).write_text(text)
+          print('PACKET_SHA256=2b2b9d76952ca418d438d824db940a9e2dcc0ad7f59a8435f48662ccb961847b')
+          PYTHON
+      - name: Install exact declared filtered dependencies without lifecycle scripts
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.2.0 --activate
+          pnpm --dir original/client --filter @instantdb/components... install --frozen-lockfile --ignore-scripts
+          pnpm --dir candidate/client --filter @instantdb/components... install --frozen-lockfile --ignore-scripts
+      - name: Install native Chromium
+        working-directory: original/client/packages/core
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Native baseline, original parser RED, candidate GREEN, type, format, build and browser transaction proof
+        shell: bash
+        run: python3 "$RUNNER_TEMP/instant-native-after/native_after.py" "$RUNNER_TEMP/instant-native-after"
